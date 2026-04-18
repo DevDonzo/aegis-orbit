@@ -37,6 +37,7 @@ class SatelliteSummary(BaseModel):
     orbital_period_minutes: float
     updated_at: str
     telemetry: list[TelemetryPoint]
+    source_type: Literal["live", "cache", "sample"] = "sample"
 
 
 class CollisionEvent(BaseModel):
@@ -63,6 +64,9 @@ class CollisionEvent(BaseModel):
     altitude_diff_km: float
     current_altitude_primary_km: float
     current_altitude_secondary_km: float
+    min_distance_km: float | None = None
+    relative_speed_km_s: float | None = None
+    data_source: Literal["live", "cache", "sample"] = "sample"
 
 
 class MLPrediction(BaseModel):
@@ -75,6 +79,7 @@ class MLPrediction(BaseModel):
     uncertainty_km: float
     prediction_source: PredictionSource
     model_name: str
+    ml_available: bool = False
 
 
 class MLStatus(BaseModel):
@@ -100,6 +105,13 @@ class HealthResponse(BaseModel):
     cache_backend: str
     ml_enabled: bool
     websocket_refresh_seconds: int
+    source_status: dict[str, str]
+
+
+class SourceStatusResponse(BaseModel):
+    mode: Literal["live", "cache", "sample"]
+    cache_backend: str
+    propagation_mode: str
 
 
 class AuthTokenResponse(BaseModel):

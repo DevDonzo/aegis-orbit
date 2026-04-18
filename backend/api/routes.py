@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from urllib.parse import parse_qs
 
-from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 
 from core.auth import (
     authenticate_user,
@@ -24,6 +24,7 @@ from ml.schemas import (
     MLPrediction,
     MLStatus,
     SatelliteSummary,
+    SourceStatusResponse,
     UserRegistrationRequest,
     UserRegistrationResponse,
 )
@@ -86,6 +87,7 @@ def _prediction_payload() -> list[MLPrediction]:
                 uncertainty_km=round(float(result["uncertainty_km"]), 4),
                 prediction_source=result["prediction_source"],  # type: ignore[arg-type]
                 model_name=str(result["model_name"]),
+                ml_available=True,
             )
             for event, result in zip(collisions, results)
         ]
@@ -101,11 +103,38 @@ def _prediction_payload() -> list[MLPrediction]:
                 uncertainty_km=0.0,
                 prediction_source="heuristic-fallback",
                 model_name="heuristic",
+                ml_available=False,
             )
             for event in collisions
         ]
 
     return predictions
+
+
+def _source_mode() -> str:
+    return "sample"
+
+
+def _normalized_satellites(limit: int | None = None) -> list[SatelliteSummary]:
+    satellites = [
+        item.model_copy(update={"source_type": _source_mode()})
+        for item in _cached_dashboard_snapshot().satellites
+    ]
+    return satellites[:limit] if limit is not None else satellites
+
+
+def _normalized_collisions(limit: int | None = None) -> list[CollisionEvent]:
+    collisions = [
+        item.model_copy(
+            update={
+                "min_distance_km": item.distance_km,
+                "relative_speed_km_s": item.relative_velocity_km_s,
+                "data_source": _source_mode(),
+            }
+        )
+        for item in _cached_dashboard_snapshot().collisions
+    ]
+    return collisions[:limit] if limit is not None else collisions
 
 
 @router.post("/auth/register", response_model=UserRegistrationResponse, status_code=status.HTTP_201_CREATED)
@@ -136,6 +165,7 @@ def health() -> HealthResponse:
         cache_backend=cache_health.backend,
         ml_enabled=settings.ml_enabled,
         websocket_refresh_seconds=settings.websocket_refresh_seconds,
+        source_status={"mode": _source_mode(), "cache_backend": cache_health.backend},
     )
 
 
@@ -145,13 +175,37 @@ def get_dashboard() -> DashboardSnapshot:
 
 
 @router.get("/satellites", response_model=list[SatelliteSummary])
-def get_satellites() -> list[SatelliteSummary]:
-    return _cached_dashboard_snapshot().satellites
+def get_satellites(limit: int | None = Query(default=None, ge=1, le=500)) -> list[SatelliteSummary]:
+    return _normalized_satellites(limit)
 
 
 @router.get("/collisions", response_model=list[CollisionEvent])
-def get_collisions() -> list[CollisionEvent]:
-    return _cached_dashboard_snapshot().collisions
+def get_collisions(limit: int | None = Query(default=None, ge=1, le=500)) -> list[CollisionEvent]:
+    return _normalized_collisions(limit)
+
+
+@router.get("/top-risks", response_model=list[CollisionEvent])
+def get_top_risks(limit: int = Query(default=5, ge=1, le=100)) -> list[CollisionEvent]:
+    return _normalized_collisions(limit)
+
+
+@router.get("/history")
+def get_history(limit: int = Query(default=10, ge=1, le=200)) -> dict[str, object]:
+    snapshot = _cached_dashboard_snapshot()
+    return {
+        "generated_at": snapshot.generated_at,
+        "events": [item.model_dump(mode="json") for item in _normalized_collisions(limit)],
+    }
+
+
+@router.get("/source-status", response_model=SourceStatusResponse)
+def get_source_status() -> SourceStatusResponse:
+    cache_health = cache.health()
+    return SourceStatusResponse(
+        mode=_source_mode(),  # type: ignore[arg-type]
+        cache_backend=cache_health.backend,
+        propagation_mode=settings.propagation_mode,
+    )
 
 
 @router.get("/ml/status", response_model=MLStatus)
@@ -161,15 +215,19 @@ def get_ml_status(_: object = Depends(require_authenticated_user)) -> MLStatus:
 
 
 @router.get("/predict", response_model=list[MLPrediction])
-def get_predictions(_: object = Depends(require_authenticated_user)) -> list[MLPrediction]:
+def get_predictions(
+    _: object = Depends(require_authenticated_user),
+    limit: int | None = Query(default=None, ge=1, le=500),
+) -> list[MLPrediction]:
     cache_key = "ml-predictions"
     cached = cache.get(cache_key)
     if cached is not None:
-        return [MLPrediction.model_validate(item) for item in cached]
+        predictions = [MLPrediction.model_validate(item) for item in cached]
+        return predictions[:limit] if limit is not None else predictions
 
     predictions = _prediction_payload()
     cache.set(cache_key, [item.model_dump(mode="json") for item in predictions], ttl_seconds=settings.predictions_cache_ttl_seconds)
-    return predictions
+    return predictions[:limit] if limit is not None else predictions
 
 
 @router.websocket("/ws/alerts")
