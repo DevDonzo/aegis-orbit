@@ -1,46 +1,98 @@
-from dataclasses import dataclass
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Literal
 
 TIME_STEP_SECONDS: int = 300
 PREDICTION_HOURS: int = 6
 DANGER_DISTANCE_KM: float = 10.0
 WARNING_DISTANCE_KM: float = 50.0
-ALTITUDE_BAND_KM: float = 25.0
-HIGH_RELATIVE_SPEED_KM_S: float = 12.0
-MODERATE_RELATIVE_SPEED_KM_S: float = 8.0
 
-LIVE_FETCH_TTL_SECONDS: int = 1800
-CONJUNCTION_CACHE_TTL_SECONDS: int = 45
-HISTORY_MAX_EVENTS: int = 500
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-CELESTRAK_BASE_URL: str = "https://celestrak.org/NORAD/elements/gp.php"
-CELESTRAK_DEFAULT_GROUP: str = "stations"
-CELESTRAK_DEFAULT_CATNR_LIST: tuple[int, ...] = (25544, 20580, 25338, 25994, 27424, 44713)
-LIVE_DATA_CACHE_FILE: str = "models\\live_data_cache.json"
-CONJUNCTION_HISTORY_FILE: str = "models\\conjunction_history.json"
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_list(name: str, default: list[str]) -> list[str]:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    values = [value.strip() for value in raw.split(",")]
+    return [value for value in values if value]
 
 
 @dataclass(frozen=True)
 class Settings:
-    api_title: str = "Satellite Collision Predictor API"
-    api_version: str = "1.0.0"
-    simulation_step_seconds: int = TIME_STEP_SECONDS
-    simulation_horizon_hours: int = PREDICTION_HOURS
-    danger_distance_km: float = DANGER_DISTANCE_KM
-    warning_distance_km: float = WARNING_DISTANCE_KM
-    altitude_band_km: float = ALTITUDE_BAND_KM
-    high_relative_speed_km_s: float = HIGH_RELATIVE_SPEED_KM_S
-    moderate_relative_speed_km_s: float = MODERATE_RELATIVE_SPEED_KM_S
-    live_fetch_ttl_seconds: int = LIVE_FETCH_TTL_SECONDS
-    conjunction_cache_ttl_seconds: int = CONJUNCTION_CACHE_TTL_SECONDS
-    history_max_events: int = HISTORY_MAX_EVENTS
-    celestrak_base_url: str = CELESTRAK_BASE_URL
-    celestrak_default_group: str = CELESTRAK_DEFAULT_GROUP
-    celestrak_default_catnr_list: tuple[int, ...] = CELESTRAK_DEFAULT_CATNR_LIST
-    live_data_cache_file: str = LIVE_DATA_CACHE_FILE
-    conjunction_history_file: str = CONJUNCTION_HISTORY_FILE
-    model_file: str = "models\\collision_model.keras"
-    normalizer_file: str = "models\\normalizer_stats.json"
-    ml_enabled: bool = True
+    api_title: str = os.getenv("SAT_API_TITLE", "Satellite Collision Predictor API")
+    api_version: str = os.getenv("SAT_API_VERSION", "2.0.0")
+    environment: Literal["development", "staging", "production"] = os.getenv(
+        "SAT_ENVIRONMENT", "development"
+    )  # type: ignore[assignment]
+    simulation_step_seconds: int = field(default_factory=lambda: max(60, _env_int("SAT_TIME_STEP_SECONDS", TIME_STEP_SECONDS)))
+    simulation_horizon_hours: int = field(
+        default_factory=lambda: max(1, _env_int("SAT_PREDICTION_HOURS", PREDICTION_HOURS))
+    )
+    danger_distance_km: float = field(default_factory=lambda: _env_float("SAT_DANGER_DISTANCE_KM", DANGER_DISTANCE_KM))
+    warning_distance_km: float = field(
+        default_factory=lambda: _env_float("SAT_WARNING_DISTANCE_KM", WARNING_DISTANCE_KM)
+    )
+    model_file: str = os.getenv("SAT_MODEL_FILE", str(PROJECT_ROOT / "models" / "collision_model.joblib"))
+    model_metadata_file: str = os.getenv(
+        "SAT_MODEL_METADATA_FILE", str(PROJECT_ROOT / "models" / "collision_model.meta.json")
+    )
+    user_store_file: str = os.getenv("SAT_USER_STORE_FILE", str(PROJECT_ROOT / "models" / "users.json"))
+    ml_enabled: bool = _env_bool("SAT_ML_ENABLED", True)
+    auth_required: bool = _env_bool("SAT_AUTH_REQUIRED", False)
+    jwt_secret: str = os.getenv("SAT_JWT_SECRET", "change-me-before-production")
+    jwt_algorithm: str = "HS256"
+    token_expiration_minutes: int = field(default_factory=lambda: max(5, _env_int("SAT_TOKEN_EXP_MINUTES", 45)))
+    demo_username: str = os.getenv("SAT_DEMO_USERNAME", "operator")
+    demo_password: str = os.getenv("SAT_DEMO_PASSWORD", "orbit-demo-2026")
+    demo_role: str = os.getenv("SAT_DEMO_ROLE", "operator")
+    satellites_cache_ttl_seconds: int = field(default_factory=lambda: max(5, _env_int("SAT_SATELLITES_CACHE_TTL", 20)))
+    collisions_cache_ttl_seconds: int = field(default_factory=lambda: max(5, _env_int("SAT_COLLISIONS_CACHE_TTL", 20)))
+    predictions_cache_ttl_seconds: int = field(default_factory=lambda: max(5, _env_int("SAT_PREDICTIONS_CACHE_TTL", 30)))
+    dashboard_cache_ttl_seconds: int = field(default_factory=lambda: max(5, _env_int("SAT_DASHBOARD_CACHE_TTL", 15)))
+    websocket_refresh_seconds: int = field(default_factory=lambda: max(2, _env_int("SAT_WS_REFRESH_SECONDS", 6)))
+    cache_url: str | None = os.getenv("SAT_REDIS_URL")
+    cache_namespace: str = os.getenv("SAT_CACHE_NAMESPACE", "scp")
+    frontend_origins: list[str] = field(
+        default_factory=lambda: _env_list(
+            "SAT_FRONTEND_ORIGINS",
+            [
+                "http://localhost:3000",
+                "http://127.0.0.1:3000",
+            ],
+        )
+    )
+    propagation_mode: Literal["skyfield"] = "skyfield"
 
 
 SAMPLE_TLES: list[dict[str, str]] = [
@@ -81,8 +133,17 @@ settings = Settings()
 
 
 def classify_risk(distance_km: float) -> str:
-    if distance_km < DANGER_DISTANCE_KM:
+    if distance_km < settings.danger_distance_km:
         return "danger"
-    if distance_km < WARNING_DISTANCE_KM:
+    if distance_km < settings.warning_distance_km:
         return "warning"
     return "safe"
+
+
+def distance_to_risk_score(distance_km: float) -> float:
+    clamped = max(0.0, float(distance_km))
+    if clamped <= settings.danger_distance_km:
+        return 1.0
+    span = max(settings.warning_distance_km - settings.danger_distance_km, 1.0)
+    score = 1.0 - ((clamped - settings.danger_distance_km) / span)
+    return round(max(0.0, min(1.0, score)), 6)

@@ -1,0 +1,50 @@
+{
+  "trained_at_utc": "2026-04-18T06:38:58.046552Z",
+  "model_type": "ModelSelectionBundle",
+  "selected_model": "gradient_boosting",
+  "candidate_models": [
+    "random_forest",
+    "gradient_boosting"
+  ],
+  "feature_columns": [
+    "dx",
+    "dy",
+    "dz",
+    "dvx",
+    "dvy",
+    "dvz",
+    "current_distance_km",
+    "altitude_diff_km",
+    "relative_speed_km_s",
+    "relative_xy_distance_km",
+    "radial_closure_rate_km_s",
+    "vertical_separation_ratio",
+    "time_to_closest_approach_min"
+  ],
+  "feature_schema_hash": "985fdb595fc2f9711340c06dbf8060c0b194ebdcc26afaed80391878cee430d6",
+  "samples": 240,
+  "train_test_seed": 42,
+  "data_timestamp_range": {
+    "sample_time_min": "2026-04-18T06:38:57.141189Z",
+    "sample_time_max": "2026-04-18T10:23:57.141189Z",
+    "tca_time_min": "2026-04-18T06:38:57.141189Z",
+    "tca_time_max": "2026-04-18T16:23:57.141189Z"
+  },
+  "model_registry": {
+    "random_forest": {
+      "test_rmse_km": 1170.5556162710657,
+      "test_mae_km": 934.0161562339581,
+      "test_r2": 0.9343578508586815
+    },
+    "gradient_boosting": {
+      "test_rmse_km": 1005.9471240058672,
+      "test_mae_km": 755.0736817632005,
+      "test_r2": 0.951521520259752
+    },
+    "ensemble": {
+      "test_rmse_km": 1056.9876204157138,
+      "test_mae_km": 835.2022978616934,
+      "test_r2": 0.9464772416546074
+    }
+  }
+}

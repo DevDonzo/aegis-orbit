@@ -1,27 +1,28 @@
 import { create } from "zustand";
 import { devtools, subscribeWithSelector } from "zustand/middleware";
-import type { ApiConnectionState, CollisionRisk, OrbitData, SystemMetrics } from "@/types";
+import type { ApiConnectionState, CollisionRisk, MlRuntimeStatus, MissionSnapshot, OrbitData, SystemMetrics } from "@/types";
 
 interface SimulationState {
   currentTimeIso: string;
-  isPlaying: boolean;
-  playbackRate: number;
+  lastUpdatedIso: string | null;
+  propagationMode: string;
   satellites: Record<string, OrbitData>;
   collisionEvents: CollisionRisk[];
   selectedEntityId: string | null;
+  selectedCollisionId: string | null;
   connectionState: ApiConnectionState;
+  mlStatus: MlRuntimeStatus | null;
   metrics: SystemMetrics;
 }
 
 interface SimulationActions {
   setCurrentTimeIso: (timeIso: string) => void;
-  advanceCurrentTimeMs: (deltaMs: number) => void;
-  setIsPlaying: (isPlaying: boolean) => void;
-  setPlaybackRate: (rate: number) => void;
-  upsertSatellites: (satellites: OrbitData[]) => void;
-  setCollisionEvents: (events: CollisionRisk[]) => void;
+  setMissionSnapshot: (snapshot: MissionSnapshot) => void;
+  applyPredictions: (predictions: Array<Pick<CollisionRisk, "id" | "probability" | "missDistanceKm" | "riskBand" | "uncertaintyKm" | "predictionSource" | "modelName">>) => void;
   setSelectedEntityId: (entityId: string | null) => void;
+  setSelectedCollisionId: (collisionId: string | null) => void;
   setConnectionState: (state: ApiConnectionState) => void;
+  setMlStatus: (status: MlRuntimeStatus | null) => void;
   setMetrics: (partial: Partial<SystemMetrics>) => void;
   reset: () => void;
 }
@@ -30,16 +31,20 @@ type SimulationStore = SimulationState & SimulationActions;
 
 const defaultState: SimulationState = {
   currentTimeIso: new Date().toISOString(),
-  isPlaying: true,
-  playbackRate: 60,
+  lastUpdatedIso: null,
+  propagationMode: "skyfield",
   satellites: {},
   collisionEvents: [],
   selectedEntityId: null,
+  selectedCollisionId: null,
   connectionState: "connecting",
+  mlStatus: null,
   metrics: {
     fps: 0,
     apiLatencyMs: 0,
-    trackedObjectCount: 0
+    trackedObjectCount: 0,
+    activeAlertCount: 0,
+    wsConnected: false
   }
 };
 
@@ -54,51 +59,51 @@ export const useSimulationStore = create<SimulationStore>()(
             false,
             "simulation/setCurrentTimeIso"
           ),
-        advanceCurrentTimeMs: (deltaMs) =>
+        setMissionSnapshot: (snapshot) =>
           set(
             (state) => {
-              const currentMs = new Date(state.currentTimeIso).getTime();
-              const base = Number.isFinite(currentMs) ? currentMs : Date.now();
-              return { currentTimeIso: new Date(base + Math.max(0, deltaMs)).toISOString() };
-            },
-            false,
-            "simulation/advanceCurrentTimeMs"
-          ),
-        setIsPlaying: (isPlaying) =>
-          set(
-            () => ({ isPlaying }),
-            false,
-            "simulation/setIsPlaying"
-          ),
-        setPlaybackRate: (playbackRate) =>
-          set(
-            () => ({ playbackRate: Math.max(1, playbackRate) }),
-            false,
-            "simulation/setPlaybackRate"
-          ),
-        upsertSatellites: (satellites) =>
-          set(
-            (state) => {
-              const merged: Record<string, OrbitData> = {};
-              satellites.forEach((satellite) => {
-                merged[satellite.id] = satellite;
-              });
+              const satellites = Object.fromEntries(snapshot.satellites.map((satellite) => [satellite.id, satellite]));
+              const hasSelectedCollision = snapshot.collisionEvents.some((event) => event.id === state.selectedCollisionId);
+              const hasSelectedEntity =
+                state.selectedEntityId !== null && Object.prototype.hasOwnProperty.call(satellites, state.selectedEntityId);
+
               return {
-                satellites: merged,
+                satellites,
+                collisionEvents: snapshot.collisionEvents,
+                propagationMode: snapshot.propagationMode,
+                lastUpdatedIso: snapshot.generatedAtIso,
+                selectedEntityId: hasSelectedEntity ? state.selectedEntityId : snapshot.satellites[0]?.id ?? null,
+                selectedCollisionId: hasSelectedCollision ? state.selectedCollisionId : snapshot.collisionEvents[0]?.id ?? null,
                 metrics: {
                   ...state.metrics,
-                  trackedObjectCount: Object.keys(merged).length
+                  apiLatencyMs: snapshot.apiLatencyMs,
+                  trackedObjectCount: snapshot.satellites.length,
+                  activeAlertCount: snapshot.collisionEvents.length
                 }
               };
             },
             false,
-            "simulation/upsertSatellites"
+            "simulation/setMissionSnapshot"
           ),
-        setCollisionEvents: (collisionEvents) =>
+        applyPredictions: (predictions) =>
           set(
-            () => ({ collisionEvents }),
+            (state) => ({
+              collisionEvents: state.collisionEvents.map((event) => {
+                const prediction = predictions.find((candidate) => candidate.id === event.id);
+                if (!prediction) return event;
+                return {
+                  ...event,
+                  probability: prediction.probability,
+                  missDistanceKm: prediction.missDistanceKm,
+                  riskBand: prediction.riskBand,
+                  uncertaintyKm: prediction.uncertaintyKm,
+                  predictionSource: prediction.predictionSource,
+                  modelName: prediction.modelName
+                };
+              })
+            }),
             false,
-            "simulation/setCollisionEvents"
+            "simulation/applyPredictions"
           ),
         setSelectedEntityId: (selectedEntityId) =>
           set(
@@ -106,11 +111,23 @@ export const useSimulationStore = create<SimulationStore>()(
             false,
             "simulation/setSelectedEntityId"
           ),
+        setSelectedCollisionId: (selectedCollisionId) =>
+          set(
+            () => ({ selectedCollisionId }),
+            false,
+            "simulation/setSelectedCollisionId"
+          ),
         setConnectionState: (connectionState) =>
           set(
             () => ({ connectionState }),
             false,
             "simulation/setConnectionState"
+          ),
+        setMlStatus: (mlStatus) =>
+          set(
+            () => ({ mlStatus }),
+            false,
+            "simulation/setMlStatus"
           ),
         setMetrics: (partial) =>
           set(

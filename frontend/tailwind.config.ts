@@ -10,26 +10,30 @@ const config: Config = {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        sans: ["var(--font-sans)", "sans-serif"],
+        mono: ["var(--font-mono)", "ui-monospace", "SFMono-Regular", "Menlo", "monospace"]
+      },
       colors: {
         cosmic: {
-          950: "#040914",
-          900: "#0a1225",
-          800: "#111d3a",
-          700: "#1a2d54"
+          950: "#050914",
+          900: "#09101b",
+          800: "#101a2a",
+          700: "#142136"
         },
         neon: {
-          cyan: "#35f2d1",
-          violet: "#7ea2ff",
-          coral: "#ff7c8d",
-          amber: "#ffd173"
+          cyan: "#63f5e4",
+          violet: "#8ab6ff",
+          coral: "#ff5d78",
+          amber: "#ffd36e"
         }
       },
       boxShadow: {
-        panel: "0 24px 80px rgba(3, 8, 25, 0.5), inset 0 1px 0 rgba(255,255,255,.08)"
+        panel: "0 32px 90px rgba(2, 7, 20, 0.65), inset 0 1px 0 rgba(255,255,255,0.06)"
       },
       backgroundImage: {
         "mesh-orbit":
-          "radial-gradient(circle at 12% 10%, rgba(126, 162, 255, .26) 0, transparent 34%), radial-gradient(circle at 86% 6%, rgba(53, 242, 209, .2) 0, transparent 32%), linear-gradient(155deg, #040914 0%, #0a1225 45%, #111d3a 100%)"
+          "radial-gradient(circle at 16% 12%, rgba(138, 182, 255, .18) 0, transparent 32%), radial-gradient(circle at 84% 8%, rgba(99, 245, 228, .14) 0, transparent 28%), linear-gradient(160deg, #040811 0%, #08101a 38%, #091120 100%)"
       }
     }
   },

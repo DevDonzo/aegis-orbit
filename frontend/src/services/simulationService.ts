@@ -1,7 +1,12 @@
 import type {
-  BackendCollisionDto,
-  BackendSatelliteDto,
+  BackendCollisionSummary,
+  BackendDashboardSnapshot,
+  BackendMlStatus,
+  BackendPredictionSummary,
+  BackendSatelliteSummary,
   CollisionRisk,
+  MissionSnapshot,
+  MlRuntimeStatus,
   OrbitData,
   RiskBand,
   TelemetrySample
@@ -9,122 +14,140 @@ import type {
 import { HttpError, apiRequest } from "@/services/apiClient";
 import { mockCollisionEvents, mockSatellites } from "@/services/mockData";
 
-const MAX_HISTORY_POINTS = 720;
-const DENSIFY_SUBDIVISIONS = 4;
-const telemetryHistoryBySatelliteId = new Map<string, TelemetrySample[]>();
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
-}
-
-function mapBackendRiskToBand(risk: BackendSatelliteDto["risk"] | BackendCollisionDto["risk"]): RiskBand {
+function normalizeRisk(risk: "safe" | "warning" | "danger", score = 0): RiskBand {
   if (risk === "danger") return "critical";
-  if (risk === "warning") return "moderate";
+  if (risk === "warning") return "high";
+  if (score >= 0.35) return "moderate";
   return "low";
 }
 
-function deriveProbabilityFromMissDistance(missDistanceKm: number): number {
-  if (missDistanceKm <= 0) return 1;
-  const score = 1 - missDistanceKm / 50;
-  return Number(clamp(score, 0, 1).toFixed(4));
-}
-
-function appendTelemetrySample(satelliteId: string, sample: TelemetrySample): TelemetrySample[] {
-  const existing = telemetryHistoryBySatelliteId.get(satelliteId) ?? [];
-  const last = existing[existing.length - 1];
-  if (!last || last.timestampIso !== sample.timestampIso) {
-    existing.push(sample);
-  } else {
-    existing[existing.length - 1] = sample;
-  }
-  const trimmed = existing.slice(-MAX_HISTORY_POINTS);
-  telemetryHistoryBySatelliteId.set(satelliteId, trimmed);
-  return trimmed;
-}
-
-function interpolateTelemetry(left: TelemetrySample, right: TelemetrySample, t: number): TelemetrySample {
+function mapTelemetry(sample: BackendSatelliteSummary["telemetry"][number]): TelemetrySample {
   return {
-    timestampIso: new Date(
-      new Date(left.timestampIso).getTime() + (new Date(right.timestampIso).getTime() - new Date(left.timestampIso).getTime()) * t
-    ).toISOString(),
-    latitudeDeg: left.latitudeDeg + (right.latitudeDeg - left.latitudeDeg) * t,
-    longitudeDeg: left.longitudeDeg + (right.longitudeDeg - left.longitudeDeg) * t,
-    altitudeKm: left.altitudeKm + (right.altitudeKm - left.altitudeKm) * t,
-    velocityKms: left.velocityKms + (right.velocityKms - left.velocityKms) * t
+    timestampIso: sample.timestamp,
+    latitudeDeg: sample.lat,
+    longitudeDeg: sample.lon,
+    altitudeKm: sample.alt_km,
+    velocityKms: sample.velocity_km_s
   };
 }
 
-function densifyTelemetry(track: TelemetrySample[]): TelemetrySample[] {
-  if (track.length < 2) return track;
-  const out: TelemetrySample[] = [];
-  for (let i = 0; i < track.length - 1; i += 1) {
-    const left = track[i];
-    const right = track[i + 1];
-    out.push(left);
-    for (let step = 1; step < DENSIFY_SUBDIVISIONS; step += 1) {
-      out.push(interpolateTelemetry(left, right, step / DENSIFY_SUBDIVISIONS));
-    }
-  }
-  out.push(track[track.length - 1]);
-  return out;
-}
-
-function backendSatelliteToOrbitData(dto: BackendSatelliteDto, sampleTimeIso: string): OrbitData {
-  const sample: TelemetrySample = {
-    timestampIso: sampleTimeIso,
-    latitudeDeg: Number(dto.lat),
-    longitudeDeg: Number(dto.lon),
-    altitudeKm: Number(dto.alt_km),
-    velocityKms: 7.67
-  };
-  const history = appendTelemetrySample(dto.name, sample);
-  const status: OrbitData["status"] = dto.risk === "danger" ? "maneuvering" : "active";
+function mapSatellite(summary: BackendSatelliteSummary): OrbitData {
   return {
-    id: dto.name,
-    name: dto.name,
-    noradId: "N/A",
-    status,
-    updatedAtIso: sampleTimeIso,
-    telemetry: densifyTelemetry(history)
+    id: summary.id,
+    name: summary.name,
+    noradId: summary.norad_id,
+    telemetry: summary.telemetry.map(mapTelemetry),
+    status: summary.status,
+    riskBand: normalizeRisk(summary.risk, summary.risk_score),
+    riskScore: summary.risk_score,
+    velocityKms: summary.velocity_km_s,
+    inclinationDeg: summary.inclination_deg,
+    orbitalPeriodMinutes: summary.orbital_period_minutes,
+    updatedAtIso: summary.updated_at
   };
 }
 
-export async function fetchSatellites(): Promise<OrbitData[]> {
-  const sampledAtIso = new Date().toISOString();
+function mapCollision(summary: BackendCollisionSummary): CollisionRisk {
+  return {
+    id: summary.id,
+    primaryObjectId: summary.satellite_1,
+    secondaryObjectId: summary.satellite_2,
+    probability: summary.collision_probability_proxy,
+    riskBand: normalizeRisk(summary.risk, summary.risk_score),
+    severityScore: summary.risk_score,
+    missDistanceKm: summary.distance_km,
+    currentDistanceKm: summary.current_distance_km,
+    relativeVelocityKms: summary.relative_velocity_km_s,
+    timeOfClosestApproachIso: summary.timestamp,
+    leadTimeMinutes: summary.lead_time_minutes,
+    vectorStart: {
+      latitudeDeg: summary.vector_start.lat,
+      longitudeDeg: summary.vector_start.lon,
+      altitudeKm: summary.vector_start.alt_km
+    },
+    vectorEnd: {
+      latitudeDeg: summary.vector_end.lat,
+      longitudeDeg: summary.vector_end.lon,
+      altitudeKm: summary.vector_end.alt_km
+    },
+    riskZoneRadiusKm: summary.risk_zone_radius_km,
+    uncertaintyKm: 0,
+    predictionSource: "heuristic-fallback",
+    modelName: "baseline-proxy"
+  };
+}
+
+export async function fetchMissionSnapshot(): Promise<MissionSnapshot> {
+  const startedAt = performance.now();
+
   try {
-    const response = await apiRequest<BackendSatelliteDto[]>("/satellites", {
+    const response = await apiRequest<BackendDashboardSnapshot>("/dashboard", {
       method: "GET",
       requiresAuth: false
     });
-    return response.map((satellite) => backendSatelliteToOrbitData(satellite, sampledAtIso));
+
+    return {
+      generatedAtIso: response.generated_at,
+      propagationMode: response.propagation_mode,
+      satellites: response.satellites.map(mapSatellite),
+      collisionEvents: response.collisions.map(mapCollision),
+      apiLatencyMs: Math.max(1, Math.round(performance.now() - startedAt))
+    };
   } catch (error) {
-    if (process.env.NEXT_PUBLIC_ENABLE_SIMULATION_MOCKS === "true" && error instanceof HttpError) {
-      return mockSatellites;
+    if (error instanceof HttpError && (error.status === 404 || error.status === 503)) {
+      return {
+        generatedAtIso: new Date().toISOString(),
+        propagationMode: "mock",
+        satellites: mockSatellites,
+        collisionEvents: mockCollisionEvents,
+        apiLatencyMs: Math.max(1, Math.round(performance.now() - startedAt))
+      };
     }
     throw error;
   }
 }
 
-export async function fetchCollisionEvents(): Promise<CollisionRisk[]> {
+export async function fetchPredictions() {
   try {
-    const response = await apiRequest<BackendCollisionDto[]>("/collisions", {
+    const response = await apiRequest<BackendPredictionSummary[]>("/predict", {
       method: "GET",
       requiresAuth: false
     });
-    return response.map((event) => ({
-      id: `${event.satellite_1}:${event.satellite_2}:${event.timestamp}`,
-      primaryObjectId: event.satellite_1,
-      secondaryObjectId: event.satellite_2,
-      probability: deriveProbabilityFromMissDistance(Number(event.distance_km)),
-      riskBand: mapBackendRiskToBand(event.risk),
-      missDistanceKm: Number(event.distance_km),
-      relativeVelocityKms: 0,
-      timeOfClosestApproachIso: new Date(event.timestamp).toISOString(),
-      riskZoneRadiusKm: clamp(Number(event.distance_km) * 0.5, 8, 75)
+
+    return response.map((prediction) => ({
+      id: prediction.id,
+      probability: prediction.collision_probability,
+      missDistanceKm: prediction.predicted_min_distance_km,
+      riskBand: normalizeRisk(prediction.predicted_risk),
+      uncertaintyKm: prediction.uncertainty_km,
+      predictionSource: prediction.prediction_source,
+      modelName: prediction.model_name
     }));
   } catch (error) {
-    if (process.env.NEXT_PUBLIC_ENABLE_SIMULATION_MOCKS === "true" && error instanceof HttpError) {
-      return mockCollisionEvents;
+    if (error instanceof HttpError && (error.status === 404 || error.status === 503 || error.status === 401)) {
+      return [];
+    }
+    throw error;
+  }
+}
+
+export async function fetchMlStatus(): Promise<MlRuntimeStatus | null> {
+  try {
+    const status = await apiRequest<BackendMlStatus>("/ml/status", {
+      method: "GET",
+      requiresAuth: false
+    });
+
+    return {
+      available: status.available,
+      source: status.source,
+      selectedModel: status.selected_model,
+      candidateModels: status.candidate_models,
+      metadata: status.metadata
+    };
+  } catch (error) {
+    if (error instanceof HttpError && (error.status === 404 || error.status === 503 || error.status === 401)) {
+      return null;
     }
     throw error;
   }

@@ -4,6 +4,20 @@
 
 :root {
   color-scheme: dark;
+  --void-980: #050914;
+  --void-950: #09101b;
+  --void-900: #101a2a;
+  --void-850: #142136;
+  --panel-stroke: rgba(160, 189, 255, 0.14);
+  --panel-bg: rgba(10, 16, 28, 0.62);
+  --panel-bg-strong: rgba(8, 13, 23, 0.84);
+  --panel-highlight: rgba(255, 255, 255, 0.08);
+  --ink-soft: rgba(232, 241, 255, 0.8);
+  --accent-cyan: #63f5e4;
+  --accent-blue: #8ab6ff;
+  --accent-amber: #ffd36e;
+  --accent-coral: #ff5d78;
+  --accent-orange: #ff9c7d;
 }
 
 html,
@@ -13,11 +27,195 @@ body {
 }
 
 body {
-  @apply bg-cosmic-950 text-slate-100 antialiased;
+  @apply text-slate-100 antialiased;
+  background-color: var(--void-980);
 }
 
 .mission-backdrop {
-  background: radial-gradient(circle at 12% 8%, rgba(126, 162, 255, 0.22), transparent 36%),
-    radial-gradient(circle at 88% 6%, rgba(53, 242, 209, 0.17), transparent 28%),
-    linear-gradient(150deg, #040914 0%, #0a1225 46%, #111d3a 100%);
+  background:
+    radial-gradient(circle at 16% 12%, rgba(138, 182, 255, 0.17), transparent 32%),
+    radial-gradient(circle at 84% 8%, rgba(99, 245, 228, 0.14), transparent 28%),
+    radial-gradient(circle at 50% 100%, rgba(255, 93, 120, 0.09), transparent 30%),
+    linear-gradient(160deg, #040811 0%, #08101a 38%, #091120 100%);
+}
+
+@layer components {
+  .hud-panel {
+    @apply border shadow-panel backdrop-blur-xl;
+    border-color: var(--panel-stroke);
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.01)),
+      linear-gradient(180deg, var(--panel-bg) 0%, var(--panel-bg-strong) 100%);
+    box-shadow:
+      0 32px 90px rgba(2, 7, 20, 0.65),
+      inset 0 1px 0 var(--panel-highlight);
+  }
+
+  .section-kicker {
+    @apply text-[11px] uppercase tracking-[0.22em];
+    color: rgba(203, 213, 225, 0.72);
+  }
+
+  .telemetry-value {
+    font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .grid-overlay {
+    background-image:
+      linear-gradient(rgba(133, 166, 226, 0.07) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(133, 166, 226, 0.07) 1px, transparent 1px);
+    background-size: 48px 48px;
+    mask-image: radial-gradient(circle at center, black 40%, transparent 100%);
+    -webkit-mask-image: radial-gradient(circle at center, black 40%, transparent 100%);
+  }
+
+  .mission-scan::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(circle at 50% 50%, rgba(99, 245, 228, 0.12), transparent 16%),
+      radial-gradient(circle at 50% 50%, rgba(138, 182, 255, 0.08), transparent 34%);
+    animation: orbital-sweep 18s linear infinite;
+    opacity: 0.65;
+    transform-origin: center;
+  }
+
+  .metric-chip {
+    @apply inline-flex items-center gap-2 rounded-sm border border-white/10 bg-[rgba(7,12,22,0.72)] px-3 py-2 text-sm text-slate-100;
+  }
+
+  .metric-chip__label {
+    @apply text-[10px] uppercase tracking-[0.18em];
+    color: rgba(148, 163, 184, 0.82);
+  }
+
+  .summary-tile {
+    @apply rounded-sm border border-white/10 px-4 py-3;
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  .summary-tile__label {
+    @apply block text-[10px] uppercase tracking-[0.18em];
+    color: rgba(148, 163, 184, 0.78);
+  }
+
+  .summary-tile__value {
+    @apply mt-2 block text-[1.15rem] font-semibold text-white;
+    font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  .threat-pulse {
+    @apply flex min-w-[132px] flex-col rounded-sm px-4 py-3 text-right;
+    border: 1px solid rgba(255, 93, 120, 0.35);
+    background: rgba(255, 93, 120, 0.12);
+    box-shadow: 0 0 0 1px rgba(255, 93, 120, 0.08), 0 0 36px rgba(255, 93, 120, 0.12);
+  }
+
+  .threat-pulse span {
+    @apply text-[1.4rem] font-semibold text-white;
+    font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  .threat-pulse small {
+    @apply mt-1 text-[10px] uppercase tracking-[0.18em] text-slate-300/75;
+  }
+
+  .status-dot {
+    @apply inline-block h-2.5 w-2.5 rounded-full;
+  }
+
+  .status-dot--online {
+    background: var(--accent-cyan);
+    box-shadow: 0 0 18px rgba(99, 245, 228, 0.55);
+  }
+
+  .status-dot--degraded {
+    background: var(--accent-amber);
+    box-shadow: 0 0 18px rgba(255, 211, 110, 0.4);
+  }
+
+  .status-dot--offline,
+  .status-dot--connecting {
+    background: var(--accent-coral);
+    box-shadow: 0 0 18px rgba(255, 93, 120, 0.45);
+  }
+
+  .timeline-range {
+    @apply w-full appearance-none bg-transparent;
+  }
+
+  .timeline-range::-webkit-slider-runnable-track {
+    height: 6px;
+    border-radius: 2px;
+    background:
+      linear-gradient(90deg, rgba(99, 245, 228, 0.16), rgba(138, 182, 255, 0.7), rgba(255, 93, 120, 0.42)),
+      rgba(255, 255, 255, 0.06);
+  }
+
+  .timeline-range::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    margin-top: -6px;
+    height: 18px;
+    width: 18px;
+    border: 1px solid rgba(255, 255, 255, 0.45);
+    border-radius: 2px;
+    background: linear-gradient(180deg, rgba(138, 182, 255, 1), rgba(78, 118, 215, 1));
+    box-shadow: 0 0 0 8px rgba(138, 182, 255, 0.14);
+  }
+
+  .timeline-range::-moz-range-track {
+    height: 6px;
+    border-radius: 2px;
+    background:
+      linear-gradient(90deg, rgba(99, 245, 228, 0.16), rgba(138, 182, 255, 0.7), rgba(255, 93, 120, 0.42)),
+      rgba(255, 255, 255, 0.06);
+  }
+
+  .timeline-range::-moz-range-thumb {
+    height: 18px;
+    width: 18px;
+    border: 1px solid rgba(255, 255, 255, 0.45);
+    border-radius: 2px;
+    background: linear-gradient(180deg, rgba(138, 182, 255, 1), rgba(78, 118, 215, 1));
+    box-shadow: 0 0 0 8px rgba(138, 182, 255, 0.14);
+  }
+}
+
+@keyframes orbital-sweep {
+  0% {
+    transform: rotate(0deg) scale(1);
+  }
+  50% {
+    transform: rotate(180deg) scale(1.08);
+  }
+  100% {
+    transform: rotate(360deg) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mission-scan::before {
+    animation: none;
+  }
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(138, 182, 255, 0.55) rgba(255, 255, 255, 0.04);
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: rgba(138, 182, 255, 0.55);
+}
+
+*::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.04);
 }

@@ -2,73 +2,101 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import pandas as pd
+from joblib import load
 
 from core.config import classify_risk, settings
-from ml.feature_engineering import FEATURE_COLUMNS, apply_normalization
+from ml.feature_engineering import FEATURE_COLUMNS, create_feature_dataframe
 
 
 class OptionalMLPredictor:
     def __init__(self) -> None:
         self.model_path = Path(settings.model_file)
-        self.normalizer_path = Path(settings.normalizer_file)
+        self.metadata_path = Path(settings.model_metadata_file)
         self.available = False
-        self.model = None
-        self.stats: dict[str, dict[str, float]] | None = None
-        self.load_error: str | None = None
+        self.bundle: dict[str, object] | None = None
+        self.metadata: dict[str, object] = {}
         self._load_if_possible()
 
     def _load_if_possible(self) -> None:
-        if not settings.ml_enabled or not self.model_path.exists() or not self.normalizer_path.exists():
-            self.load_error = "model_or_normalizer_missing"
+        if not settings.ml_enabled or not self.model_path.exists():
             return
-        try:
-            from tensorflow import keras
-        except ImportError:
-            self.load_error = "tensorflow_not_installed"
-            return
-        try:
-            with self.normalizer_path.open("r", encoding="utf-8") as f:
-                self.stats = json.load(f)
-            self.model = keras.models.load_model(self.model_path)
-        except Exception as exc:
-            self.load_error = str(exc)
-            self.available = False
-            return
-        self.load_error = None
+        loaded = load(self.model_path)
+        if isinstance(loaded, dict) and "models" in loaded:
+            self.bundle = loaded
+        else:  # Legacy single-model compatibility
+            self.bundle = {
+                "models": {"legacy": loaded},
+                "selected_model": "legacy",
+                "feature_columns": FEATURE_COLUMNS,
+            }
+        if self.metadata_path.exists():
+            with self.metadata_path.open("r", encoding="utf-8") as handle:
+                self.metadata = json.load(handle)
         self.available = True
 
-    def predict_min_distance(self, rows: list[dict[str, float]]) -> list[float]:
-        if not self.available or self.model is None or self.stats is None:
-            return [float("nan")] * len(rows)
-        features = pd.DataFrame(rows)[FEATURE_COLUMNS]
-        normalized = apply_normalization(features, self.stats)
-        predictions = self.model.predict(normalized.to_numpy(dtype=np.float32), verbose=0).reshape(-1)
-        return [max(0.0, float(v)) for v in predictions]
+    def _candidate_predictions(self, rows: list[dict[str, float]]) -> dict[str, np.ndarray]:
+        if not self.available or self.bundle is None:
+            raise RuntimeError("Model bundle is not available.")
+        features = create_feature_dataframe(pd.DataFrame(rows))[FEATURE_COLUMNS].to_numpy(dtype=np.float32)
+        predictions: dict[str, np.ndarray] = {}
+        for name, model in (self.bundle["models"] or {}).items():
+            predictions[str(name)] = np.asarray(model.predict(features), dtype=np.float32).reshape(-1)
+        return predictions
 
-    def enrich_collision(
-        self,
-        row: dict[str, float],
-    ) -> dict[str, Any]:
-        prediction = self.predict_min_distance([row])[0]
-        if not np.isfinite(prediction):
-            return {
-                "ml_available": False,
-                "ml_predicted_min_distance_km": None,
-                "ml_risk_score": None,
-            }
-        capped = max(0.0, float(prediction))
-        ml_risk_score = float(max(0.0, min(1.0, 1.0 - (capped / 100.0))))
-        return {
-            "ml_available": True,
-            "ml_predicted_min_distance_km": round(capped, 3),
-            "ml_risk_score": round(ml_risk_score, 4),
-            "ml_predicted_risk": self.distance_to_risk(capped),
-        }
+    def predict_distances(self, rows: list[dict[str, float]]) -> list[dict[str, float | str]]:
+        if not self.available or self.bundle is None:
+            raise RuntimeError("Model bundle is not available.")
+
+        predictions = self._candidate_predictions(rows)
+        if not predictions:
+            raise RuntimeError("No candidate models available.")
+
+        matrix = np.vstack(list(predictions.values()))
+        ensemble = matrix.mean(axis=0)
+        spread = matrix.std(axis=0)
+        selected_model = str(self.bundle.get("selected_model", "legacy"))
+
+        results: list[dict[str, float | str]] = []
+        for index in range(ensemble.shape[0]):
+            if selected_model == "ensemble":
+                predicted = float(ensemble[index])
+                source = "ensemble"
+            else:
+                predicted = float(predictions.get(selected_model, ensemble)[index])
+                source = "selected-model"
+
+            results.append(
+                {
+                    "predicted_distance_km": max(0.0, predicted),
+                    "uncertainty_km": max(0.0, float(spread[index])),
+                    "prediction_source": source,
+                    "model_name": selected_model,
+                }
+            )
+        return results
 
     @staticmethod
     def distance_to_risk(distance_km: float) -> str:
         return classify_risk(distance_km)
+
+    @staticmethod
+    def distance_to_probability(distance_km: float, uncertainty_km: float = 0.0) -> float:
+        return float(np.exp(-max(0.0, distance_km) / max(22.0, 48.0 + uncertainty_km * 6.0)))
+
+    def status(self) -> dict[str, object]:
+        candidate_models = []
+        selected_model = None
+        if self.bundle is not None:
+            candidate_models = list((self.bundle.get("models") or {}).keys())
+            selected_model = str(self.bundle.get("selected_model")) if self.bundle.get("selected_model") else None
+        return {
+            "available": self.available,
+            "model_path": str(self.model_path),
+            "metadata": self.metadata if self.metadata else None,
+            "source": "selected-model" if self.available else "heuristic-fallback",
+            "candidate_models": candidate_models,
+            "selected_model": selected_model,
+        }

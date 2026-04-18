@@ -1,328 +1,213 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from itertools import combinations
+from math import exp
 from typing import Any
 
 import numpy as np
 import pandas as pd
-from skyfield.api import EarthSatellite, load, wgs84
 
-from core.cache import SimpleTTLCache
-from core.config import settings
-from core.live_data import load_satellite_records
-from ml.schemas import CollisionEvent, SatellitePosition
+from core.config import SAMPLE_TLES, classify_risk, distance_to_risk_score, settings
+from ml.propagation import PropagationState, build_propagator
+from ml.schemas import CollisionEvent, DashboardSnapshot, SatelliteSummary, TelemetryPoint, VectorEnvelope
 
-_TS = load.timescale()
-_CONJUNCTION_CACHE = SimpleTTLCache()
-_LAST_SOURCE_STATUS: dict[str, Any] = {
-    "mode": "sample",
-    "live_available": False,
-    "cache_available": False,
-    "last_fetch_at": None,
-    "note": "No fetch attempted yet.",
-}
+
+@dataclass(frozen=True)
+class SatelliteTrack:
+    id: str
+    name: str
+    norad_id: str
+    inclination_deg: float
+    orbital_period_minutes: float
+    states: list[PropagationState]
 
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _time_step_seconds(horizon_hours: int | None = None) -> int:
-    return max(1, int(settings.simulation_step_seconds))
+def _future_times(start: datetime) -> list[datetime]:
+    total_seconds = settings.simulation_horizon_hours * 3600
+    steps = max(1, int(total_seconds // settings.simulation_step_seconds))
+    return [start + timedelta(seconds=index * settings.simulation_step_seconds) for index in range(steps + 1)]
 
 
-def _prediction_hours(horizon_hours: int | None = None) -> int:
-    if horizon_hours is None:
-        return max(1, int(settings.simulation_horizon_hours))
-    return max(1, int(horizon_hours))
+def _parse_norad_id(line1: str) -> str:
+    return line1[2:7].strip()
 
 
-def _distance_km(a: dict[str, Any], b: dict[str, Any]) -> float:
-    vec_a = np.array([a["x_km"], a["y_km"], a["z_km"]], dtype=float)
-    vec_b = np.array([b["x_km"], b["y_km"], b["z_km"]], dtype=float)
-    return float(max(0.0, np.linalg.norm(vec_a - vec_b)))
+def _parse_inclination_deg(line2: str) -> float:
+    try:
+        return float(line2.split()[2])
+    except Exception:
+        return 0.0
 
 
-def _relative_speed_km_s(dx_vel: float, dy_vel: float, dz_vel: float) -> float:
-    velocity_vector = np.array([dx_vel, dy_vel, dz_vel], dtype=float)
-    return float(np.linalg.norm(velocity_vector))
+def _parse_orbital_period_minutes(line2: str) -> float:
+    try:
+        mean_motion = float(line2.split()[-1])
+    except Exception:
+        return 0.0
+    if mean_motion <= 0:
+        return 0.0
+    return round((24 * 60) / mean_motion, 3)
 
 
-def _future_times(start: datetime, horizon_hours: int | None = None) -> list[datetime]:
-    step_seconds = _time_step_seconds(horizon_hours=horizon_hours)
-    total_seconds = _prediction_hours(horizon_hours=horizon_hours) * 3600
-    steps = max(1, int(total_seconds // step_seconds))
-    return [start + timedelta(seconds=i * step_seconds) for i in range(steps + 1)]
-
-
-def _risk_tier_from_score(score: float) -> str:
-    if score >= 80:
-        return "danger"
-    if score >= 45:
-        return "warning"
-    return "safe"
-
-
-def _base_score_from_distance(min_distance_km: float) -> float:
-    if min_distance_km < settings.danger_distance_km:
-        return 95.0
-    if min_distance_km < settings.warning_distance_km:
-        return 70.0
-    if min_distance_km < 150:
-        return 40.0
-    return 10.0
-
-
-def _prediction_quality(mode: str) -> str:
-    if mode == "live":
-        return "medium"
-    if mode == "cache":
-        return "medium-low"
-    return "low"
-
-
-def _risk_score(
-    min_distance_km: float,
-    relative_speed_km_s: float,
-    altitude_diff_km: float,
-    source_mode: str,
-) -> float:
-    score = _base_score_from_distance(min_distance_km)
-    if altitude_diff_km <= settings.altitude_band_km:
-        score += 12.0
-    if relative_speed_km_s >= settings.high_relative_speed_km_s:
-        score += 10.0
-    elif relative_speed_km_s >= settings.moderate_relative_speed_km_s:
-        score += 5.0
-    if source_mode == "sample":
-        score -= 5.0
-    return float(max(0.0, min(100.0, score)))
-
-
-def _satellite_state(satellite: EarthSatellite, when: datetime) -> dict[str, Any]:
-    t = _TS.from_datetime(when)
-    geocentric = satellite.at(t)
-    subpoint = wgs84.subpoint(geocentric)
-    xyz = geocentric.position.km
-    velocity = geocentric.velocity.km_per_s
-    return {
-        "lat": float(subpoint.latitude.degrees),
-        "lon": float(subpoint.longitude.degrees),
-        "alt_km": float(subpoint.elevation.km),
-        "x_km": float(xyz[0]),
-        "y_km": float(xyz[1]),
-        "z_km": float(xyz[2]),
-        "vx_km_s": float(velocity[0]),
-        "vy_km_s": float(velocity[1]),
-        "vz_km_s": float(velocity[2]),
-    }
-
-
-def _build_satellites(
-    refresh: bool = False,
-    catnr_list: list[int] | None = None,
-    group: str | None = None,
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    records, source_status = load_satellite_records(refresh=refresh, catnr_list=catnr_list, group=group)
-    satellites: list[dict[str, Any]] = []
-    for record in records:
-        try:
-            satellite = EarthSatellite(record["line1"], record["line2"], record["name"], _TS)
-        except Exception:
-            continue
-        satellites.append(
-            {
-                "satellite": satellite,
-                "name": str(record["name"]),
-                "norad_id": str(record.get("norad_id", "unknown")),
-                "source_type": str(record.get("source_type", source_status.get("mode", "sample"))),
-                "fetched_at": str(record.get("fetched_at") or source_status.get("last_fetch_at") or ""),
-            }
+def _distance_km(state_a: PropagationState, state_b: PropagationState) -> float:
+    return float(
+        np.linalg.norm(
+            np.array([state_a.x_km, state_a.y_km, state_a.z_km], dtype=float)
+            - np.array([state_b.x_km, state_b.y_km, state_b.z_km], dtype=float)
         )
-    global _LAST_SOURCE_STATUS
-    _LAST_SOURCE_STATUS = dict(source_status)
-    return satellites, source_status
+    )
 
 
-def get_source_status() -> dict[str, Any]:
-    return dict(_LAST_SOURCE_STATUS)
-
-
-def build_current_satellite_positions(
-    refresh: bool = False,
-    catnr_list: list[int] | None = None,
-    group: str | None = None,
-) -> list[SatellitePosition]:
-    satellite_entries, _ = _build_satellites(refresh=refresh, catnr_list=catnr_list, group=group)
-    if not satellite_entries:
-        return []
-
-    now = _utc_now()
-    states: list[dict[str, Any]] = []
-    for entry in satellite_entries:
-        try:
-            state = _satellite_state(entry["satellite"], now)
-        except Exception:
-            continue
-        if not np.all(np.isfinite([state["lat"], state["lon"], state["alt_km"], state["x_km"], state["y_km"], state["z_km"]])):
-            continue
-        states.append({**entry, **state})
-
-    out: list[SatellitePosition] = []
-    for i, state_i in enumerate(states):
-        nearest = float("inf")
-        for j, state_j in enumerate(states):
-            if i == j:
-                continue
-            nearest = min(nearest, _distance_km(state_i, state_j))
-        score = _risk_score(
-            min_distance_km=nearest,
-            relative_speed_km_s=0.0,
-            altitude_diff_km=0.0,
-            source_mode=str(state_i["source_type"]),
+def _relative_velocity_km_s(state_a: PropagationState, state_b: PropagationState) -> float:
+    return float(
+        np.linalg.norm(
+            np.array([state_a.vx_km_s, state_a.vy_km_s, state_a.vz_km_s], dtype=float)
+            - np.array([state_b.vx_km_s, state_b.vy_km_s, state_b.vz_km_s], dtype=float)
         )
-        out.append(
-            SatellitePosition(
-                name=state_i["name"],
-                norad_id=state_i["norad_id"],
-                lat=round(state_i["lat"], 6),
-                lon=round(state_i["lon"], 6),
-                alt_km=round(state_i["alt_km"], 3),
-                x_km=round(state_i["x_km"], 3),
-                y_km=round(state_i["y_km"], 3),
-                z_km=round(state_i["z_km"], 3),
-                risk=_risk_tier_from_score(score),
-                source_type=state_i["source_type"],
-                fetched_at=state_i["fetched_at"],
+    )
+
+
+def _collision_probability(distance_km: float, relative_velocity_km_s: float, uncertainty_km: float = 0.0) -> float:
+    distance_term = exp(-max(0.0, distance_km) / max(18.0, 42.0 + uncertainty_km * 6.0))
+    velocity_term = min(1.25, max(0.45, relative_velocity_km_s / 8.0))
+    return round(max(0.0, min(1.0, distance_term * velocity_term)), 6)
+
+
+def _build_tracks(timestamps: list[datetime]) -> list[SatelliteTrack]:
+    tracks: list[SatelliteTrack] = []
+    for entry in SAMPLE_TLES:
+        propagator = build_propagator(name=entry["name"], line1=entry["line1"], line2=entry["line2"])
+        states = propagator.propagate_many(timestamps)
+        if not states:
+            continue
+        tracks.append(
+            SatelliteTrack(
+                id=entry["name"],
+                name=entry["name"],
+                norad_id=_parse_norad_id(entry["line1"]),
+                inclination_deg=_parse_inclination_deg(entry["line2"]),
+                orbital_period_minutes=_parse_orbital_period_minutes(entry["line2"]),
+                states=states,
             )
         )
-    return out
+    return tracks
 
 
-def compute_collision_candidates(
-    horizon_hours: int | None = None,
-    limit: int | None = None,
-    risk: str | None = None,
-    name_filter: str | None = None,
-    refresh: bool = False,
-    catnr_list: list[int] | None = None,
-    group: str | None = None,
-) -> list[CollisionEvent]:
-    cache_key = (
-        f"conjunction:{horizon_hours}:{limit}:{risk}:{name_filter}:"
-        f"{','.join(str(v) for v in (catnr_list or []))}:{group}"
-    )
-    if not refresh:
-        cached = _CONJUNCTION_CACHE.get(cache_key)
-        if cached is not None:
-            return [CollisionEvent.model_validate(item) for item in cached]
-
-    satellite_entries, source_status = _build_satellites(refresh=refresh, catnr_list=catnr_list, group=group)
-    if len(satellite_entries) < 2:
+def build_current_satellite_positions() -> list[SatelliteSummary]:
+    tracks = _build_tracks(_future_times(_utc_now()))
+    if not tracks:
         return []
 
-    now = _utc_now()
-    times = _future_times(now, horizon_hours=horizon_hours)
-    output: list[CollisionEvent] = []
-    normalized_filter = (name_filter or "").strip().lower()
+    summaries: list[SatelliteSummary] = []
+    for primary in tracks:
+        current = primary.states[0]
+        nearest_distance = min(
+            (_distance_km(current, secondary.states[0]) for secondary in tracks if secondary.id != primary.id),
+            default=float("inf"),
+        )
+        summaries.append(
+            SatelliteSummary(
+                id=primary.id,
+                name=primary.name,
+                norad_id=primary.norad_id,
+                risk=classify_risk(nearest_distance),
+                risk_score=distance_to_risk_score(nearest_distance),
+                lat=round(current.lat, 6),
+                lon=round(current.lon, 6),
+                alt_km=round(current.alt_km, 3),
+                velocity_km_s=round(
+                    float(np.linalg.norm([current.vx_km_s, current.vy_km_s, current.vz_km_s])),
+                    4,
+                ),
+                inclination_deg=primary.inclination_deg,
+                orbital_period_minutes=primary.orbital_period_minutes,
+                updated_at=current.timestamp,
+                telemetry=[
+                    TelemetryPoint(
+                        timestamp=state.timestamp,
+                        lat=round(state.lat, 6),
+                        lon=round(state.lon, 6),
+                        alt_km=round(state.alt_km, 3),
+                        velocity_km_s=round(
+                            float(np.linalg.norm([state.vx_km_s, state.vy_km_s, state.vz_km_s])),
+                            4,
+                        ),
+                    )
+                    for state in primary.states
+                ],
+            )
+        )
 
-    for left, right in combinations(satellite_entries, 2):
-        sat_a: EarthSatellite = left["satellite"]
-        sat_b: EarthSatellite = right["satellite"]
-        name_a = str(left["name"])
-        name_b = str(right["name"])
-        if normalized_filter:
-            pair_text = f"{name_a} {name_b} {left['norad_id']} {right['norad_id']}".lower()
-            if normalized_filter not in pair_text:
-                continue
+    return sorted(summaries, key=lambda item: (-item.risk_score, item.name))
 
-        try:
-            current_a = _satellite_state(sat_a, now)
-            current_b = _satellite_state(sat_b, now)
-        except Exception:
-            continue
 
+def compute_collision_candidates() -> list[CollisionEvent]:
+    timestamps = _future_times(_utc_now())
+    tracks = _build_tracks(timestamps)
+    collisions: list[CollisionEvent] = []
+
+    for primary, secondary in combinations(tracks, 2):
+        current_primary = primary.states[0]
+        current_secondary = secondary.states[0]
+        current_distance = _distance_km(current_primary, current_secondary)
+
+        min_index = 0
         min_distance = float("inf")
-        tca = now
-        tca_a = current_a
-        tca_b = current_b
-        for step_time in times:
-            try:
-                step_a = _satellite_state(sat_a, step_time)
-                step_b = _satellite_state(sat_b, step_time)
-            except Exception:
-                continue
-            distance = _distance_km(step_a, step_b)
+        for index, (state_a, state_b) in enumerate(zip(primary.states, secondary.states)):
+            distance = _distance_km(state_a, state_b)
             if distance < min_distance:
                 min_distance = distance
-                tca = step_time
-                tca_a = step_a
-                tca_b = step_b
+                min_index = index
 
-        if not np.isfinite(min_distance):
-            continue
-
-        dx = float(current_b["x_km"] - current_a["x_km"])
-        dy = float(current_b["y_km"] - current_a["y_km"])
-        dz = float(current_b["z_km"] - current_a["z_km"])
-        dvx = float(current_b["vx_km_s"] - current_a["vx_km_s"])
-        dvy = float(current_b["vy_km_s"] - current_a["vy_km_s"])
-        dvz = float(current_b["vz_km_s"] - current_a["vz_km_s"])
-        relative_speed = _relative_speed_km_s(
-            float(tca_b["vx_km_s"] - tca_a["vx_km_s"]),
-            float(tca_b["vy_km_s"] - tca_a["vy_km_s"]),
-            float(tca_b["vz_km_s"] - tca_a["vz_km_s"]),
+        closest_primary = primary.states[min_index]
+        closest_secondary = secondary.states[min_index]
+        relative_velocity = _relative_velocity_km_s(current_primary, current_secondary)
+        lead_minutes = min_index * settings.simulation_step_seconds / 60
+        risk = classify_risk(min_distance)
+        collisions.append(
+            CollisionEvent(
+                id=f"{primary.id}:{secondary.id}:{min_index}",
+                satellite_1=primary.id,
+                satellite_2=secondary.id,
+                distance_km=round(min_distance, 4),
+                current_distance_km=round(current_distance, 4),
+                risk=risk,
+                risk_score=distance_to_risk_score(min_distance),
+                timestamp=closest_primary.timestamp,
+                lead_time_minutes=round(lead_minutes, 3),
+                relative_velocity_km_s=round(relative_velocity, 4),
+                collision_probability_proxy=_collision_probability(min_distance, relative_velocity),
+                risk_zone_radius_km=round(max(18.0, min(140.0, min_distance * 7.5 + 12.0)), 3),
+                vector_start=VectorEnvelope(
+                    lat=round(closest_primary.lat, 6),
+                    lon=round(closest_primary.lon, 6),
+                    alt_km=round(closest_primary.alt_km, 3),
+                ),
+                vector_end=VectorEnvelope(
+                    lat=round(closest_secondary.lat, 6),
+                    lon=round(closest_secondary.lon, 6),
+                    alt_km=round(closest_secondary.alt_km, 3),
+                ),
+                dx=round(current_secondary.x_km - current_primary.x_km, 6),
+                dy=round(current_secondary.y_km - current_primary.y_km, 6),
+                dz=round(current_secondary.z_km - current_primary.z_km, 6),
+                dvx=round(current_secondary.vx_km_s - current_primary.vx_km_s, 6),
+                dvy=round(current_secondary.vy_km_s - current_primary.vy_km_s, 6),
+                dvz=round(current_secondary.vz_km_s - current_primary.vz_km_s, 6),
+                altitude_diff_km=round(abs(current_secondary.alt_km - current_primary.alt_km), 6),
+                current_altitude_primary_km=round(current_primary.alt_km, 6),
+                current_altitude_secondary_km=round(current_secondary.alt_km, 6),
+            )
         )
-        altitude_diff = abs(float(current_b["alt_km"] - current_a["alt_km"]))
-        score = _risk_score(
-            min_distance_km=min_distance,
-            relative_speed_km_s=relative_speed,
-            altitude_diff_km=altitude_diff,
-            source_mode=str(source_status.get("mode", "sample")),
-        )
-        risk_tier = _risk_tier_from_score(score)
-        if risk and risk_tier != risk:
-            continue
 
-        event = CollisionEvent(
-            satellite_1=name_a,
-            satellite_2=name_b,
-            distance_km=round(min_distance, 3),
-            min_distance_km=round(min_distance, 3),
-            relative_speed_km_s=round(relative_speed, 4),
-            altitude_band_match=altitude_diff <= settings.altitude_band_km,
-            prediction_quality=_prediction_quality(str(source_status.get("mode", "sample"))),
-            data_source=str(source_status.get("mode", "sample")),
-            risk=risk_tier,
-            timestamp=tca.isoformat().replace("+00:00", "Z"),
-            dx=round(dx, 6),
-            dy=round(dy, 6),
-            dz=round(dz, 6),
-            dvx=round(dvx, 6),
-            dvy=round(dvy, 6),
-            dvz=round(dvz, 6),
-            current_distance_km=round(_distance_km(current_a, current_b), 6),
-            altitude_diff_km=round(altitude_diff, 6),
-        )
-        output.append(event)
-
-    output.sort(
-        key=lambda item: (
-            {"danger": 0, "warning": 1, "safe": 2}.get(item.risk, 3),
-            item.min_distance_km,
-            -item.relative_speed_km_s,
-        )
-    )
-    if limit is not None:
-        output = output[: max(1, int(limit))]
-
-    _CONJUNCTION_CACHE.set(
-        cache_key,
-        [item.model_dump() for item in output],
-        ttl_seconds=settings.conjunction_cache_ttl_seconds,
-    )
-    return output
+    collisions.sort(key=lambda item: (-item.risk_score, -item.collision_probability_proxy, item.distance_km))
+    return collisions
 
 
 def build_predict_rows_from_collisions(collisions: list[CollisionEvent]) -> list[dict[str, float]]:
@@ -334,89 +219,58 @@ def build_predict_rows_from_collisions(collisions: list[CollisionEvent]) -> list
             "dvx": event.dvx,
             "dvy": event.dvy,
             "dvz": event.dvz,
-            "relative_speed_km_s": _relative_speed_km_s(event.dvx, event.dvy, event.dvz),
             "current_distance_km": event.current_distance_km,
             "altitude_diff_km": event.altitude_diff_km,
+            "lead_time_minutes": event.lead_time_minutes,
         }
         for event in collisions
     ]
 
 
-def generate_training_dataframe(
-    samples_per_pair: int = 12,
-    offset_minutes: int = 10,
-    refresh: bool = False,
-) -> pd.DataFrame:
-    satellite_entries, _ = _build_satellites(refresh=refresh)
-    if len(satellite_entries) < 2:
-        return pd.DataFrame(
-            columns=[
-                "satellite_1",
-                "satellite_2",
-                "sample_time",
-                "dx",
-                "dy",
-                "dz",
-                "dvx",
-                "dvy",
-                "dvz",
-                "relative_speed_km_s",
-                "current_distance_km",
-                "altitude_diff_km",
-                "label_min_distance_km",
-                "label_risk_class",
-            ]
-        )
+def build_dashboard_snapshot() -> DashboardSnapshot:
+    satellites = build_current_satellite_positions()
+    collisions = compute_collision_candidates()
+    return DashboardSnapshot(
+        generated_at=_utc_now().isoformat().replace("+00:00", "Z"),
+        propagation_mode=settings.propagation_mode,
+        satellites=satellites,
+        collisions=collisions,
+    )
 
-    base_time = _utc_now()
+
+def generate_training_dataframe(samples_per_pair: int = 16, offset_minutes: int = 15) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
-    for left, right in combinations(satellite_entries, 2):
-        sat_a: EarthSatellite = left["satellite"]
-        sat_b: EarthSatellite = right["satellite"]
-        for idx in range(samples_per_pair):
-            start_time = base_time + timedelta(minutes=idx * max(1, offset_minutes))
-            current_a = _satellite_state(sat_a, start_time)
-            current_b = _satellite_state(sat_b, start_time)
+    base_time = _utc_now()
 
+    for sample_index in range(samples_per_pair):
+        timestamps = _future_times(base_time + timedelta(minutes=sample_index * offset_minutes))
+        tracks = _build_tracks(timestamps)
+        for primary, secondary in combinations(tracks, 2):
+            current_primary = primary.states[0]
+            current_secondary = secondary.states[0]
+            min_index = 0
             min_distance = float("inf")
-            for step_time in _future_times(start_time):
-                step_a = _satellite_state(sat_a, step_time)
-                step_b = _satellite_state(sat_b, step_time)
-                min_distance = min(min_distance, _distance_km(step_a, step_b))
 
-            dx = float(current_b["x_km"] - current_a["x_km"])
-            dy = float(current_b["y_km"] - current_a["y_km"])
-            dz = float(current_b["z_km"] - current_a["z_km"])
-            dvx = float(current_b["vx_km_s"] - current_a["vx_km_s"])
-            dvy = float(current_b["vy_km_s"] - current_a["vy_km_s"])
-            dvz = float(current_b["vz_km_s"] - current_a["vz_km_s"])
-            relative_speed = _relative_speed_km_s(dvx, dvy, dvz)
-            current_distance = _distance_km(current_a, current_b)
-            altitude_diff = abs(float(current_b["alt_km"] - current_a["alt_km"]))
+            for index, (state_a, state_b) in enumerate(zip(primary.states, secondary.states)):
+                distance = _distance_km(state_a, state_b)
+                if distance < min_distance:
+                    min_distance = distance
+                    min_index = index
 
             rows.append(
                 {
-                    "satellite_1": left["name"],
-                    "satellite_2": right["name"],
-                    "sample_time": start_time.isoformat().replace("+00:00", "Z"),
-                    "dx": dx,
-                    "dy": dy,
-                    "dz": dz,
-                    "dvx": dvx,
-                    "dvy": dvy,
-                    "dvz": dvz,
-                    "relative_speed_km_s": relative_speed,
-                    "current_distance_km": current_distance,
-                    "altitude_diff_km": altitude_diff,
-                    "label_min_distance_km": float(min_distance),
-                    "label_risk_class": _risk_tier_from_score(
-                        _risk_score(
-                            min_distance_km=min_distance,
-                            relative_speed_km_s=relative_speed,
-                            altitude_diff_km=altitude_diff,
-                            source_mode="live",
-                        )
-                    ),
+                    "dx": current_secondary.x_km - current_primary.x_km,
+                    "dy": current_secondary.y_km - current_primary.y_km,
+                    "dz": current_secondary.z_km - current_primary.z_km,
+                    "dvx": current_secondary.vx_km_s - current_primary.vx_km_s,
+                    "dvy": current_secondary.vy_km_s - current_primary.vy_km_s,
+                    "dvz": current_secondary.vz_km_s - current_primary.vz_km_s,
+                    "current_distance_km": _distance_km(current_primary, current_secondary),
+                    "altitude_diff_km": abs(current_secondary.alt_km - current_primary.alt_km),
+                    "lead_time_minutes": min_index * settings.simulation_step_seconds / 60,
+                    "label_min_distance_km": min_distance,
+                    "sample_time_utc": current_primary.timestamp,
+                    "tca_time_utc": primary.states[min_index].timestamp,
                 }
             )
 
