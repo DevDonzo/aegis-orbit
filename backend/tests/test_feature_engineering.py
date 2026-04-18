@@ -14,6 +14,7 @@ def test_feature_engineering_outputs_normalized_data() -> None:
                 "dvx": 0.1,
                 "dvy": 0.2,
                 "dvz": 0.3,
+                "relative_speed_km_s": 0.3741657387,
                 "current_distance_km": 4.0,
                 "altitude_diff_km": 5.0,
             }
@@ -23,5 +24,5 @@ def test_feature_engineering_outputs_normalized_data() -> None:
     features = create_feature_dataframe(frame)
     stats = fit_normalizer(features)
     transformed = apply_normalization(features, stats)
-    assert transformed.shape[1] == 8
+    assert transformed.shape[1] == 9
     assert np.isfinite(transformed.to_numpy()).all()

@@ -8,7 +8,12 @@ from sklearn.model_selection import train_test_split
 
 from core.config import settings
 from ml.data_pipeline import generate_training_dataframe
-from ml.feature_engineering import apply_normalization, create_feature_dataframe, fit_normalizer
+from ml.feature_engineering import (
+    apply_normalization,
+    create_feature_dataframe,
+    fit_normalizer,
+    split_features_and_label,
+)
 
 
 def train_and_save_model() -> dict[str, float]:
@@ -18,8 +23,8 @@ def train_and_save_model() -> dict[str, float]:
         raise RuntimeError("TensorFlow is required for training. Install tensorflow.") from exc
 
     df = generate_training_dataframe()
-    features = create_feature_dataframe(df)
-    labels = df["label_min_distance_km"].to_numpy(dtype=np.float32)
+    features, labels_series = split_features_and_label(df, label_column="label_min_distance_km")
+    labels = labels_series.to_numpy(dtype=np.float32)
     stats = fit_normalizer(features)
     normalized_features = apply_normalization(features, stats).to_numpy(dtype=np.float32)
 
@@ -30,13 +35,26 @@ def train_and_save_model() -> dict[str, float]:
     model = keras.Sequential(
         [
             keras.layers.Input(shape=(x_train.shape[1],)),
+            keras.layers.Dense(64, activation="relu"),
             keras.layers.Dense(32, activation="relu"),
-            keras.layers.Dense(16, activation="relu"),
             keras.layers.Dense(1, activation="linear"),
         ]
     )
     model.compile(optimizer="adam", loss="mse", metrics=["mae"])
-    model.fit(x_train, y_train, epochs=50, batch_size=16, verbose=0)
+    early_stop = keras.callbacks.EarlyStopping(
+        monitor="val_loss",
+        patience=8,
+        restore_best_weights=True,
+    )
+    model.fit(
+        x_train,
+        y_train,
+        validation_split=0.2,
+        epochs=80,
+        batch_size=16,
+        verbose=0,
+        callbacks=[early_stop],
+    )
     loss, mae = model.evaluate(x_test, y_test, verbose=0)
 
     model_path = Path(settings.model_file)
@@ -47,7 +65,12 @@ def train_and_save_model() -> dict[str, float]:
     with normalizer_path.open("w", encoding="utf-8") as f:
         json.dump(stats, f, indent=2)
 
-    return {"test_mse": float(loss), "test_mae": float(mae), "samples": float(len(df))}
+    return {
+        "test_mse": float(loss),
+        "test_mae": float(mae),
+        "samples": float(len(df)),
+        "feature_count": float(len(create_feature_dataframe(df).columns)),
+    }
 
 
 def main() -> None:

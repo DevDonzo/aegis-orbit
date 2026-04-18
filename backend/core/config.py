@@ -4,6 +4,19 @@ TIME_STEP_SECONDS: int = 300
 PREDICTION_HOURS: int = 6
 DANGER_DISTANCE_KM: float = 10.0
 WARNING_DISTANCE_KM: float = 50.0
+ALTITUDE_BAND_KM: float = 25.0
+HIGH_RELATIVE_SPEED_KM_S: float = 12.0
+MODERATE_RELATIVE_SPEED_KM_S: float = 8.0
+
+LIVE_FETCH_TTL_SECONDS: int = 1800
+CONJUNCTION_CACHE_TTL_SECONDS: int = 45
+HISTORY_MAX_EVENTS: int = 500
+
+CELESTRAK_BASE_URL: str = "https://celestrak.org/NORAD/elements/gp.php"
+CELESTRAK_DEFAULT_GROUP: str = "stations"
+CELESTRAK_DEFAULT_CATNR_LIST: tuple[int, ...] = (25544, 20580, 25338, 25994, 27424, 44713)
+LIVE_DATA_CACHE_FILE: str = "models\\live_data_cache.json"
+CONJUNCTION_HISTORY_FILE: str = "models\\conjunction_history.json"
 
 
 @dataclass(frozen=True)
@@ -14,6 +27,17 @@ class Settings:
     simulation_horizon_hours: int = PREDICTION_HOURS
     danger_distance_km: float = DANGER_DISTANCE_KM
     warning_distance_km: float = WARNING_DISTANCE_KM
+    altitude_band_km: float = ALTITUDE_BAND_KM
+    high_relative_speed_km_s: float = HIGH_RELATIVE_SPEED_KM_S
+    moderate_relative_speed_km_s: float = MODERATE_RELATIVE_SPEED_KM_S
+    live_fetch_ttl_seconds: int = LIVE_FETCH_TTL_SECONDS
+    conjunction_cache_ttl_seconds: int = CONJUNCTION_CACHE_TTL_SECONDS
+    history_max_events: int = HISTORY_MAX_EVENTS
+    celestrak_base_url: str = CELESTRAK_BASE_URL
+    celestrak_default_group: str = CELESTRAK_DEFAULT_GROUP
+    celestrak_default_catnr_list: tuple[int, ...] = CELESTRAK_DEFAULT_CATNR_LIST
+    live_data_cache_file: str = LIVE_DATA_CACHE_FILE
+    conjunction_history_file: str = CONJUNCTION_HISTORY_FILE
     model_file: str = "models\\collision_model.keras"
     normalizer_file: str = "models\\normalizer_stats.json"
     ml_enabled: bool = True
