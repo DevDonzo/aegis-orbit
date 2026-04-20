@@ -153,16 +153,16 @@ pytest
 4. CI must pass:
    - `Frontend lint + build`
    - `Backend tests`
-5. Require one approval and resolved review conversations
-6. Merge PR → deployment updates automatically
+5. No mandatory human approval (branch protection currently requires `0` approvals)
+6. Merge PR (human or agent) → deployment updates automatically
 
 This is the production-safe workflow used by strong engineering teams (small and large).
 
-### PR review policy (human + agent)
+### PR review policy (agent-first)
 
 - Use an AI reviewer (Copilot code review / automated review agent) on every PR for fast first-pass feedback.
-- Keep one human approval before merge for accountability and production safety.
-- If you choose zero human reviews, reduce branch protection rules explicitly (not recommended for production).
+- Human review is optional in current policy.
+- CI checks are still mandatory before merge.
 
 ---
 
