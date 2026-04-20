@@ -21,10 +21,7 @@ services:
       - key: SAT_JWT_SECRET
         generateValue: true
       - key: SAT_FRONTEND_ORIGINS
-        fromService:
-          type: web
-          name: scp-frontend
-          property: url
+        value: https://scp-frontend.onrender.com
 
   - type: web
     name: scp-frontend
@@ -38,10 +35,7 @@ services:
     healthCheckPath: /
     envVars:
       - key: NEXT_PUBLIC_BACKEND_API_URL
-        fromService:
-          type: web
-          name: scp-backend
-          property: url
+        value: https://scp-backend.onrender.com
       - key: NEXT_PUBLIC_GLOBE_IMAGERY_MODE
         value: arcgis
       - key: NEXT_PUBLIC_ARCGIS_TOKEN
