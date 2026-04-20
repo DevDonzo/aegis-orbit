@@ -136,7 +136,7 @@ If a secret is not configured, that deploy job is skipped.
 This repository now includes `render.yaml` so both apps can be launched together with managed previews and CI-gated auto deploys:
 
 - `scp-backend` (FastAPI) with `/health` checks
-- `scp-frontend` (Next.js) wired to backend URL automatically
+- `scp-frontend` (Next.js) preconfigured to call `https://scp-backend.onrender.com`
 - PR previews enabled (`previews.generation: automatic`)
 - Deploy trigger mode set to `checksPass` (only deploy after CI passes)
 
@@ -148,6 +148,11 @@ Render setup:
 4. Deploy.
 
 After that, every merge to `main` updates live services automatically.
+
+If you rename services or use custom domains, update these Render environment variables:
+
+- Frontend: `NEXT_PUBLIC_BACKEND_API_URL`
+- Backend: `SAT_FRONTEND_ORIGINS`
 
 For production safety, keep GitHub `main` protected with required checks and PR-only merges.
 
