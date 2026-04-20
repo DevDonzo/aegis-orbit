@@ -154,17 +154,19 @@ pytest
    - `Frontend lint + build`
    - `Backend tests`
    - `Backend runtime smoke`
-5. No mandatory human approval (branch protection currently requires `0` approvals)
-6. Merge PR (human or agent) only after all required checks are green
+5. Wait for required approval before merge
+6. Merge PR (human or agent) only after all required checks are green and approval is present
 
 This is the production-safe workflow used by strong engineering teams (small and large).
 
-### PR review policy (agent-first)
+### PR review policy (strict)
 
 - Use an AI reviewer (Copilot code review / automated review agent) on every PR for fast first-pass feedback.
-- Human review is optional in current policy.
-- CI checks are still mandatory before merge.
-- Branch protection should enforce checks for all users (including admins/agents) to prevent bypass merges.
+- Human approval is mandatory before merge.
+- CI checks are mandatory before merge.
+- Branch protection applies to all users, including admins/agents (no bypass merges).
+
+The canonical contributor rules are in `CONTRIBUTING.md` and `AGENTS.md`.
 
 ---
 
