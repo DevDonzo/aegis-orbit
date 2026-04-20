@@ -133,11 +133,10 @@ If a secret is not configured, that deploy job is skipped.
 
 ## One-path live deployment (Render Blueprint)
 
-This repository now includes `render.yaml` so both apps can be launched together with managed previews and CI-gated auto deploys:
+This repository now includes `render.yaml` so both apps can be launched together with CI-gated auto deploys:
 
 - `scp-backend` (FastAPI) with `/health` checks
 - `scp-frontend` (Next.js) preconfigured to call `https://scp-backend.onrender.com`
-- PR previews enabled (`previews.generation: automatic`)
 - Deploy trigger mode set to `checksPass` (only deploy after CI passes)
 
 Render setup:
