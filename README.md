@@ -4,6 +4,9 @@ A mission-control style platform for **space situational awareness (SSA)**: conj
 
 This project is designed to evolve from portfolio demo to production-grade engineering system with strict contracts, typed boundaries, CI/CD discipline, and operational reliability.
 
+**Repository:** `DevDonzo/aegis-orbit`  
+**Primary branch:** `main`
+
 ---
 
 ## System overview
@@ -154,6 +157,12 @@ pytest
 6. Merge PR → deployment updates automatically
 
 This is the production-safe workflow used by strong engineering teams (small and large).
+
+### PR review policy (human + agent)
+
+- Use an AI reviewer (Copilot code review / automated review agent) on every PR for fast first-pass feedback.
+- Keep one human approval before merge for accountability and production safety.
+- If you choose zero human reviews, reduce branch protection rules explicitly (not recommended for production).
 
 ---
 
