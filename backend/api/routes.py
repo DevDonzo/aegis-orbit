@@ -14,6 +14,7 @@ from core.auth import (
 )
 from core.cache import CacheBackend
 from core.config import settings
+from core.live_data import load_satellite_records
 from ml.data_pipeline import build_dashboard_snapshot, build_predict_rows_from_collisions
 from ml.predictor import OptionalMLPredictor
 from ml.schemas import (
@@ -112,7 +113,10 @@ def _prediction_payload() -> list[MLPrediction]:
 
 
 def _source_mode() -> str:
-    return "sample"
+    # Determine the actual data source mode (live, cache, or sample)
+    # load_satellite_records returns (records, source_status)
+    _, source_status = load_satellite_records()
+    return source_status.get("mode", "sample")
 
 
 def _normalized_satellites(limit: int | None = None) -> list[SatelliteSummary]:

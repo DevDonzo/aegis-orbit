@@ -92,6 +92,24 @@ class Settings:
             ],
         )
     )
+    # Live data integration settings
+    live_data_cache_file: str = os.getenv(
+        "SAT_LIVE_DATA_CACHE_FILE",
+        str(PROJECT_ROOT / "cache" / "live_data.json")
+    )
+    celestrak_base_url: str = os.getenv(
+        "SAT_CELESTRAK_BASE_URL",
+        "https://celestrak.org/NORAD/elements/gp.php"
+    )
+    celestrak_default_group: str = os.getenv(
+        "SAT_CELESTRAK_DEFAULT_GROUP",
+        "active"
+    )
+    celestrak_default_catnr_list: list[int] = field(
+        default_factory=lambda: [int(x) for x in _env_list("SAT_CELESTRAK_DEFAULT_CATNR_LIST", [])]
+    )
+    live_fetch_ttl_seconds: int = _env_int("SAT_LIVE_FETCH_TTL_SECONDS", 300)
+
     propagation_mode: Literal["skyfield"] = "skyfield"
 
 
