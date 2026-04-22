@@ -69,8 +69,8 @@ class Settings:
     )
     user_store_file: str = os.getenv("SAT_USER_STORE_FILE", str(PROJECT_ROOT / "models" / "users.json"))
     ml_enabled: bool = _env_bool("SAT_ML_ENABLED", True)
-    auth_required: bool = _env_bool("SAT_AUTH_REQUIRED", False)
-    jwt_secret: str = os.getenv("SAT_JWT_SECRET", "change-me-before-production")
+    auth_required: bool = _env_bool("SAT_AUTH_REQUIRED", True)
+    jwt_secret: str = os.getenv("SAT_JWT_SECRET") or __import__('secrets').token_urlsafe(32)
     jwt_algorithm: str = "HS256"
     token_expiration_minutes: int = field(default_factory=lambda: max(5, _env_int("SAT_TOKEN_EXP_MINUTES", 45)))
     demo_username: str = os.getenv("SAT_DEMO_USERNAME", "operator")
