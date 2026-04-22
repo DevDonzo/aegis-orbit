@@ -1,24 +1,72 @@
 name: Auto Merge
 
 on:
-  pull_request:
+  pull_request_target:
     types:
       - opened
       - synchronize
       - reopened
       - edited
+      - ready_for_review
+      - labeled
+      - unlabeled
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
 
 jobs:
-  enable-auto-merge:
-    name: Enable Auto Merge for AI Agent PRs
+  enable-auto-merge-on-events:
+    name: Enable Auto Merge on PR events
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-    if: github.actor == 'github-actions[bot]' || contains(github.event.pull_request.labels.*.name, 'ai-agent') || contains(github.head_ref, 'feature/') || contains(github.head_ref, 'fix/')
+    if: github.event_name == 'pull_request_target'
     steps:
-      - name: Enable auto-merge for this PR
-        run: gh pr merge --auto --merge "$PR_URL"
+      - name: Enable auto-merge for qualifying PR
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          IS_DRAFT: ${{ github.event.pull_request.draft }}
+          ACTOR: ${{ github.actor }}
+          LABELS_JSON: ${{ toJson(github.event.pull_request.labels.*.name) }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [[ "$IS_DRAFT" == "true" ]]; then
+            echo "Skipping draft PR."
+            exit 0
+          fi
+
+          if [[ "$ACTOR" == "github-actions[bot]" || "$HEAD_REF" == feature/* || "$HEAD_REF" == fix/* || "$LABELS_JSON" == *"ai-agent"* ]]; then
+            gh pr merge --auto --merge "$PR_URL"
+          else
+            echo "Skipping non-agent PR: $PR_URL"
+          fi
+
+  reconcile-open-prs:
+    name: Reconcile open PR auto-merge state
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request_target'
+    steps:
+      - name: Enable auto-merge for qualifying open PRs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          failures=0
+          while read -r pr_url; do
+            if [[ -n "$pr_url" ]]; then
+              if ! gh pr merge --auto --merge "$pr_url"; then
+                echo "Failed to enable auto-merge for $pr_url"
+                failures=$((failures + 1))
+              fi
+            fi
+          done < <(
+            gh pr list --state open --base main \
+              --json url,headRefName,isDraft,labels,author \
+              --jq '.[] | select(.isDraft == false) | select((.author.login == "github-actions[bot]") or (.headRefName | startswith("feature/")) or (.headRefName | startswith("fix/")) or ((.labels | map(.name)) | index("ai-agent"))) | .url'
+          )
+
+          if [[ "$failures" -gt 0 ]]; then
+            exit 1
+          fi
