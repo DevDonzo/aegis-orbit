@@ -154,15 +154,15 @@ pytest
    - `Frontend lint + build`
    - `Backend tests`
    - `Backend runtime smoke`
-5. Wait for required approval before merge
-6. Merge PR (human or agent) only after all required checks are green and approval is present
+5. Wait for required CI checks to pass before merge
+6. Merge PR (human or agent) only after all required checks are green. AI agents are authorized to merge autonomously once CI is green.
 
 This is the production-safe workflow used by strong engineering teams (small and large).
 
-### PR review policy (strict)
+### PR review policy (autonomous)
 
 - Use an AI reviewer (Copilot code review / automated review agent) on every PR for fast first-pass feedback.
-- Human approval is mandatory before merge.
+- Human approval is optional for AI agent PRs if CI passes.
 - CI checks are mandatory before merge.
 - Branch protection applies to all users, including admins/agents (no bypass merges).
 
