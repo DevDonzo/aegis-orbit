@@ -12,6 +12,9 @@ jobs:
   enable-auto-merge:
     name: Enable Auto Merge for AI Agent PRs
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     if: github.actor == 'github-actions[bot]' || contains(github.event.pull_request.labels.*.name, 'ai-agent') || contains(github.head_ref, 'feature/') || contains(github.head_ref, 'fix/')
     steps:
       - name: Enable auto-merge for this PR
