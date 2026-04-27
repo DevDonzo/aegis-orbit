@@ -129,6 +129,10 @@ def register_user(username: str, password: str, role: str = "operator") -> UserR
     if normalized in users:
         raise ValueError("User already exists.")
 
+    # Validate role against allowed roles defined in the registration schema
+    allowed_roles = {"operator", "analyst", "viewer"}
+    if role not in allowed_roles:
+        raise ValueError(f"Role must be one of {', '.join(sorted(allowed_roles))}.")
     user = UserRecord(username=normalized, password_hash=hash_password(password), role=role, source="file")
     users[normalized] = user
     _save_users(users)
