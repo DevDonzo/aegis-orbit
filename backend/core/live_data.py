@@ -155,11 +155,32 @@ def _sample_records() -> list[dict[str, Any]]:
     return records
 
 
+# In‑memory cache for TLE data (process‑wide)
+_memory_cache: dict[str, Any] = {}
+_MEMORY_TTL_SECONDS = 3600  # 1 hour
+
+def _memory_cache_valid() -> bool:
+    ts = _memory_cache.get("fetched_at")
+    if not ts:
+        return False
+    try:
+        fetched_at = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except Exception:
+        return False
+    age = (datetime.now(timezone.utc) - fetched_at).total_seconds()
+    return age <= _MEMORY_TTL_SECONDS
+
 def load_satellite_records(
     refresh: bool = False,
     catnr_list: list[int] | None = None,
     group: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Load satellite TLE records.
+
+    - Uses an in‑memory cache (1 h TTL) to avoid hitting CelesTrak on every request.
+    - Falls back to file cache, then sample data.
+    - ``refresh=True`` forces a fresh live fetch.
+    """
     catnr = catnr_list if catnr_list is not None else list(settings.celestrak_default_catnr_list)
     source_status: dict[str, Any] = {
         "mode": "sample",
@@ -169,6 +190,22 @@ def load_satellite_records(
         "note": "Using sample data.",
     }
 
+    # 1️⃣ Check in‑memory cache first
+    if _memory_cache_valid() and not refresh:
+        records = _memory_cache.get("records", [])
+        if records:
+            for r in records:
+                r["source_type"] = "cache"
+            source_status.update({
+                "mode": "cache",
+                "cache_available": True,
+                "last_fetch_at": _memory_cache["fetched_at"],
+                "note": "Using cached live data (in‑memory).",
+                "live_available": True,
+            })
+            return records, source_status
+
+    # 2️⃣ Try file cache (fallback if memory missed or expired)
     cache_payload = _read_cache()
     if cache_payload and isinstance(cache_payload.get("records"), list):
         source_status["cache_available"] = True
@@ -177,32 +214,54 @@ def load_satellite_records(
             records = [r for r in cache_payload["records"] if isinstance(r, dict)]
             for record in records:
                 record["source_type"] = "cache"
-            source_status["mode"] = "cache"
-            source_status["note"] = "Using cached live data."
+            # Populate in‑memory cache for next calls
+            _memory_cache.clear()
+            _memory_cache.update({"records": records, "fetched_at": cache_payload.get("fetched_at")})
+            source_status.update({
+                "mode": "cache",
+                "note": "Using cached live data (disk).",
+                "live_available": True,
+            })
             return records, source_status
 
+    # 3️⃣ Attempt live fetch from CelesTrak
     try:
         live_records = _fetch_live_records(catnr_list=catnr, group=group)
         if live_records:
+            # Update both caches
             _write_cache(live_records, source="live")
-            source_status["mode"] = "live"
-            source_status["live_available"] = True
-            source_status["last_fetch_at"] = live_records[0].get("fetched_at")
-            source_status["note"] = "Using live CelesTrak data."
+            _memory_cache.clear()
+            _memory_cache.update({"records": live_records, "fetched_at": live_records[0].get("fetched_at")})
+            source_status.update({
+                "mode": "live",
+                "live_available": True,
+                "last_fetch_at": live_records[0].get("fetched_at"),
+                "note": "Using live CelesTrak data.",
+            })
             return live_records, source_status
     except Exception:
         source_status["live_available"] = False
         source_status["note"] = "Live fetch failed."
 
+    # 4️⃣ Fallback: use file cache if we have it (even if stale)
     if cache_payload and isinstance(cache_payload.get("records"), list):
         records = [r for r in cache_payload["records"] if isinstance(r, dict)]
         for record in records:
             record["source_type"] = "cache"
-        source_status["mode"] = "cache"
-        source_status["note"] = "Live fetch failed; using cached data."
+        # Populate in‑memory cache with stale data as a last resort
+        _memory_cache.clear()
+        _memory_cache.update({"records": records, "fetched_at": cache_payload.get("fetched_at")})
+        source_status.update({
+            "mode": "cache",
+            "note": "Live fetch failed; using cached data.",
+            "live_available": True,
+        })
         return records, source_status
 
+    # 5️⃣ Finally, fall back to sample data
     sample = _sample_records()
-    source_status["mode"] = "sample"
-    source_status["note"] = "Live and cache unavailable; using sample data."
+    source_status.update({
+        "mode": "sample",
+        "note": "Live and cache unavailable; using sample data.",
+    })
     return sample, source_status
