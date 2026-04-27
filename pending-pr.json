@@ -1,6 +1,6 @@
 {
-  "title": "Add live satellite endpoint",
-  "body": "Expose raw TLE satellite data via a new `/satellites/live` endpoint. Includes source status and fallback to sample data. Adds tests for endpoint.\n\n- New GET /satellites/live returning `source` and `records`.\n- Test ensures response shape and fields.\n\nThis foundation enables future real‑time orbital data integrations.",
-  "head": "feature/live-orbital-data-foundation",
+  "title": "Add live satellite visualization using Cesium",
+  "body": "Fetches TLE data from `/satellites/live`, parses with satellite.js, and renders moving points on the Cesium globe. Includes in‑memory caching to avoid rate‑limits and a refresh interval.",
+  "head": "feature/satellite-visualization",
   "base": "main"
 }

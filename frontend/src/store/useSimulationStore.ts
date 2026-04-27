@@ -24,6 +24,7 @@ interface SimulationActions {
   setConnectionState: (state: ApiConnectionState) => void;
   setMlStatus: (status: MlRuntimeStatus | null) => void;
   setMetrics: (partial: Partial<SystemMetrics>) => void;
+  setSatellites: (satellites: Record<string, OrbitData>) => void;
   reset: () => void;
 }
 
@@ -146,6 +147,12 @@ export const useSimulationStore = create<SimulationStore>()(
             }),
             false,
             "simulation/setMetrics"
+          ),
+        setSatellites: (satellites) =>
+          set(
+            () => ({ satellites }),
+            false,
+            "simulation/setSatellites"
           ),
         reset: () =>
           set(

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useLiveSatellites } from "@/hooks/useLiveSatellites";
 import * as Cesium from "cesium";
 import { useSceneManager } from "@/components/cesium/useSceneManager";
 import { getArcGisToken, getCesiumIonToken, getGlobeImageryMode } from "@/lib/env";
@@ -71,6 +72,8 @@ export default function CesiumViewer() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewerRef = useRef<Cesium.Viewer | null>(null);
   const [readyState, setReadyState] = useState<ViewerReadyState>("booting");
+  // Pull live TLE data and populate store
+  useLiveSatellites();
 
   const satellitesMap = useSimulationStore((state) => state.satellites);
   const collisionEvents = useSimulationStore((state) => state.collisionEvents);
