@@ -212,6 +212,17 @@ def get_source_status() -> SourceStatusResponse:
     )
 
 
+@router.get("/satellites/live")
+def get_live_satellites(refresh: bool = Query(default=False)) -> dict[str, object]:
+    """Return raw satellite TLE records (live, cached, or sample) and source status.
+    
+    - ``refresh`` forces a fresh fetch from CelesTrak.
+    - Returns ``{"source": <source_status>, "records": <list of records>}``.
+    """
+    records, source = load_satellite_records(refresh=refresh)
+    return {"source": source, "records": records}
+
+
 @router.get("/ml/status", response_model=MLStatus)
 def get_ml_status(_: object = Depends(require_authenticated_user)) -> MLStatus:
     predictor = OptionalMLPredictor()
