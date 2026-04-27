@@ -81,10 +81,18 @@ def _fetch_json(url: str) -> list[dict[str, Any]]:
 
 
 def _fetch_live_records(catnr_list: list[int] | None, group: str | None) -> list[dict[str, Any]]:
+    """Fetch live TLE data from CelesTrak.
+
+    When ``catnr_list`` is provided we attempt to fetch individual satellite TLEs
+    (JSON format) – this path is unchanged. If no ``catnr_list`` is given we fetch
+    the full active‑set TLE text (``FORMAT=tle``) and parse it into the same record
+    shape used elsewhere.
+    """
     records: list[dict[str, Any]] = []
     seen: set[str] = set()
 
     if catnr_list:
+        # Existing JSON path (unchanged)
         for catnr in catnr_list:
             query = urlencode({"CATNR": str(catnr), "FORMAT": "JSON"})
             url = f"{settings.celestrak_base_url}?{query}"
@@ -98,12 +106,29 @@ def _fetch_live_records(catnr_list: list[int] | None, group: str | None) -> list
                 seen.add(key)
                 records.append(normalized)
     else:
-        query = urlencode({"GROUP": group or settings.celestrak_default_group, "FORMAT": "JSON"})
+        # Fetch plain‑text TLE data for the whole group (default "active")
+        grp = group or settings.celestrak_default_group
+        query = urlencode({"GROUP": grp, "FORMAT": "tle"})
         url = f"{settings.celestrak_base_url}?{query}"
-        for item in _fetch_json(url):
-            normalized = _normalize_record(item)
-            if normalized is None:
+        try:
+            with urlopen(url, timeout=15) as response:
+                raw = response.read().decode("utf-8")
+        except Exception:
+            return []
+        # Parse lines: name, line1, line2 repeating
+        lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+        for i in range(0, len(lines), 3):
+            if i + 2 >= len(lines):
+                break
+            name_line, line1, line2 = lines[i], lines[i + 1], lines[i + 2]
+            if not line1.startswith("1 ") or not line2.startswith("2 "):
                 continue
+            normalized = {
+                "name": name_line,
+                "norad_id": line1[2:7].strip(),
+                "line1": line1,
+                "line2": line2,
+            }
             key = normalized["norad_id"]
             if key in seen:
                 continue
